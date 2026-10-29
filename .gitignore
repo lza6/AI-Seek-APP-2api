@@ -1,0 +1,7 @@
+accounts.json
+bench/*.json
+_scratch/
+*.log
+__pycache__/
+.pytest_cache/
+.env

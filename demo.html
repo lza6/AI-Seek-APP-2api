@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AI Seek 2API · 本地演示</title>
+<style>
+  :root{
+    --bg:#0b0f17; --panel:#121826; --line:#1f2a3d; --text:#e6edf7; --dim:#8fa1bd;
+    --accent:#4f8cff; --ok:#27c07a; --warn:#f5a524; --err:#f04f5f;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:linear-gradient(180deg,#0b0f17,#0e1421 60%,#0b0f17);color:var(--text);
+       font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}
+  header{display:flex;align-items:center;gap:14px;padding:16px 22px;border-bottom:1px solid var(--line);
+         background:rgba(18,24,38,.85);position:sticky;top:0;backdrop-filter:blur(8px);z-index:5}
+  header h1{font-size:16px;margin:0;font-weight:600;letter-spacing:.3px}
+  .badge{font-size:12px;padding:2px 9px;border-radius:999px;border:1px solid var(--line);color:var(--dim)}
+  .badge.mock{color:var(--warn);border-color:#4a3a16;background:#2a2213}
+  .badge.real{color:var(--ok);border-color:#154b34;background:#0f2a1f}
+  main{display:grid;grid-template-columns:1fr 320px;gap:18px;padding:18px 22px;max-width:1180px;margin:0 auto}
+  @media(max-width:900px){main{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px}
+  .chat{min-height:56vh;display:flex;flex-direction:column;gap:12px}
+  .log{flex:1;overflow:auto;display:flex;flex-direction:column;gap:10px;max-height:52vh;padding-right:4px}
+  .msg{padding:10px 13px;border-radius:12px;max-width:88%;white-space:pre-wrap;word-break:break-word}
+  .msg.user{align-self:flex-end;background:#1b2b4a;border:1px solid #24406e}
+  .msg.bot{align-self:flex-start;background:#16202f;border:1px solid var(--line)}
+  .msg.err{align-self:flex-start;background:#2a1417;border:1px solid #55212a;color:#ffb4bc}
+  .row{display:flex;gap:10px}
+  input,select,button,textarea{font:inherit;color:var(--text);background:#0e1522;border:1px solid var(--line);
+       border-radius:10px;padding:10px 12px;outline:none}
+  input:focus,select:focus,textarea:focus{border-color:var(--accent)}
+  input{flex:1}
+  button{cursor:pointer;background:#1c2c4c;border-color:#27406b}
+  button:hover{background:#233759}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#04101f;font-weight:600}
+  button.primary:disabled{opacity:.55;cursor:not-allowed}
+  dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:6px 12px;font-size:13px}
+  dt{color:var(--dim)}
+  dd{margin:0;text-align:right;font-variant-numeric:tabular-nums}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.8px;color:var(--dim);margin:0 0 12px}
+  .hint{font-size:12px;color:var(--dim);margin-top:10px;line-height:1.7}
+  code{background:#0e1522;border:1px solid var(--line);border-radius:5px;padding:1px 5px;font-size:12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>AI Seek 2API · 本地演示</h1>
+  <span id="mode" class="badge">mode: ?</span>
+  <span id="health" class="badge">health: ?</span>
+  <span class="badge">OpenAI 兼容 /v1/chat/completions</span>
+</header>
+
+<main>
+  <section class="card chat">
+    <div class="row">
+      <select id="model"></select>
+      <select id="stream" style="width:130px">
+        <option value="1">流式</option>
+        <option value="0">非流式</option>
+      </select>
+    </div>
+    <div id="log" class="log"></div>
+    <div class="row">
+      <input id="q" placeholder="输入问题，Enter 发送" autocomplete="off" />
+      <button id="send" class="primary">发送</button>
+      <button id="clear">清空</button>
+    </div>
+    <div class="hint">
+      本页直接调用本机网关 <code>/v1/chat/completions</code>。
+      <code>mock</code> 模式为本地合成流（不触达上游）；<code>real</code> 模式下上游对无订阅账号统一返回
+      <code>10007 PRO_REQUIRED</code>，网关会如实显示为错误气泡而不是伪造内容。
+    </div>
+  </section>
+
+  <aside class="card">
+    <h2>运行指标</h2>
+    <dl>
+      <dt>模式</dt><dd id="m-mode">-</dd>
+      <dt>账号池</dt><dd id="m-pool">-</dd>
+      <dt>累计请求</dt><dd id="m-req">-</dd>
+      <dt>PRO 拦截</dt><dd id="m-pro">-</dd>
+      <dt>错误数</dt><dd id="m-err">-</dd>
+      <dt>p50 / p99</dt><dd id="m-lat">-</dd>
+      <dt>上线时长</dt><dd id="m-up">-</dd>
+    </dl>
+    <h2 style="margin-top:18px">模型数</h2>
+    <dl><dt>可用模型</dt><dd id="m-models">-</dd></dl>
+  </aside>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let busy = false;
+
+async function boot(){
+  try{
+    const h = await (await fetch('/health')).json();
+    $('mode').textContent = 'mode: ' + h.mode;
+    $('mode').className = 'badge ' + (h.mode === 'real' ? 'real' : 'mock');
+    $('health').textContent = 'health: ' + h.status;
+  }catch(e){ $('health').textContent = 'health: down'; }
+  try{
+    const m = await (await fetch('/v1/models')).json();
+    const sel = $('model');
+    sel.innerHTML = '';
+    for(const it of m.data){
+      const o = document.createElement('option');
+      o.value = it.id;
+      o.textContent = `${it.id}  ·  ${it.meta.label}${it.meta.paidOnly ? '  [PRO]' : ''}`;
+      sel.appendChild(o);
+    }
+    $('m-models').textContent = m.data.length;
+  }catch(e){}
+  setInterval(tick, 2000); tick();
+}
+
+async function tick(){
+  try{
+    const s = await (await fetch('/api/stats')).json();
+    $('m-mode').textContent = s.mode;
+    $('m-pool').textContent = s.accounts;
+    $('m-req').textContent = s.requests;
+    $('m-pro').textContent = s.proBlocked;
+    $('m-err').textContent = s.errors;
+    $('m-lat').textContent = `${s.latencyMs.p50} / ${s.latencyMs.p99} ms`;
+    $('m-up').textContent = s.uptimeSec + ' s';
+  }catch(e){}
+}
+
+function bubble(cls, text){
+  const d = document.createElement('div');
+  d.className = 'msg ' + cls;
+  d.textContent = text;
+  $('log').appendChild(d);
+  $('log').scrollTop = $('log').scrollHeight;
+  return d;
+}
+
+async function send(){
+  const q = $('q').value.trim();
+  if(!q || busy) return;
+  $('q').value = '';
+  bubble('user', q);
+  const stream = $('stream').value === '1';
+  const out = bubble('bot', '');
+  busy = true; $('send').disabled = true;
+  const body = { model: $('model').value, messages: [{role:'user', content:q}], stream };
+  try{
+    const r = await fetch('/v1/chat/completions', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
+    });
+    if(!stream){
+      const j = await r.json();
+      if(!r.ok || j.error){
+        out.className = 'msg err';
+        out.textContent = (j.error && (j.error.type + ': ' + j.error.message)) || ('HTTP ' + r.status);
+      }else{
+        out.textContent = j.choices[0].message.content;
+      }
+      return;
+    }
+    if(!r.ok){
+      const j = await r.json().catch(()=>({}));
+      out.className = 'msg err';
+      out.textContent = (j.error && (j.error.type + ': ' + j.error.message)) || ('HTTP ' + r.status);
+      return;
+    }
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '', text = '';
+    while(true){
+      const {value, done} = await reader.read();
+      if(done) break;
+      buf += dec.decode(value, {stream:true});
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for(const line of lines){
+        const s = line.trim();
+        if(!s.startsWith('data:')) continue;
+        const payload = s.slice(5).trim();
+        if(payload === '[DONE]') continue;
+        let ev; try{ ev = JSON.parse(payload);}catch(e){ continue; }
+        if(ev.error){
+          out.className = 'msg err';
+          out.textContent = ev.error.type + ': ' + ev.error.message;
+          continue;
+        }
+        const piece = ev.choices && ev.choices[0] && ev.choices[0].delta && ev.choices[0].delta.content;
+        if(piece){ text += piece; out.textContent = text; $('log').scrollTop = $('log').scrollHeight; }
+      }
+    }
+  }catch(e){
+    out.className = 'msg err';
+    out.textContent = '请求失败: ' + e;
+  }finally{
+    busy = false; $('send').disabled = false;
+  }
+}
+
+$('send').addEventListener('click', send);
+$('q').addEventListener('keydown', e => { if(e.key === 'Enter') send(); });
+$('clear').addEventListener('click', () => { $('log').innerHTML = ''; });
+boot();
+</script>
+</body>
+</html>
